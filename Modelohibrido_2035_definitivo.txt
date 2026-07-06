@@ -1,0 +1,336 @@
+# =============================================================================
+# MODELO HÍBRIDO v2.1 (REGRESIÓN CUADRÁTICA RIDGE + XGBOOST)
+# Target: % sobre la media mensual + Exportación CSV 2019-2035
+# =============================================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+import xgboost as xgb
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import make_pipeline
+import warnings
+import os
+
+warnings.filterwarnings('ignore')
+SEED = 42
+np.random.seed(SEED)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. CARGA Y PREPARACIÓN DE DATOS (DESDE 2019)
+# ─────────────────────────────────────────────────────────────────────────────
+def cargar_datos(ruta_csv: str) -> pd.DataFrame:
+    if not os.path.exists(ruta_csv):
+        raise FileNotFoundError(f"¡ERROR! No encuentro el archivo '{ruta_csv}'.")
+
+    df = pd.read_csv(ruta_csv)
+    df['Fecha'] = pd.to_datetime(df['Fecha'])
+
+    # FILTRAR DESDE 2019 (Transición Fotovoltaica)
+    df = df[df['Fecha'].dt.year >= 2019]
+    df = df.sort_values(['Fecha', 'hora']).reset_index(drop=True)
+
+    df['mes']           = df['Fecha'].dt.month
+    df['dia_semana']    = df['Fecha'].dt.dayofweek
+    df['semana_anio']   = df['Fecha'].dt.isocalendar().week.astype(int)
+    df['es_fin_semana'] = (df['dia_semana'] >= 5).astype(int)
+
+    df['precio_medio_mensual'] = df.groupby(['Año', 'mes'])['Precios'].transform('mean')
+    df['target'] = df['Precios'] / df['precio_medio_mensual'] * 100
+
+    df['timestamp'] = df['Fecha'] + pd.to_timedelta(df['hora'] - 1, unit='h')
+    df = df.sort_values('timestamp').reset_index(drop=True)
+
+    print(f"Dataset histórico cargado: {df['Año'].min()} - {df['Año'].max()} ({len(df):,} horas)")
+    return df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. INGENIERÍA DE FEATURES PARA XGBOOST
+# ─────────────────────────────────────────────────────────────────────────────
+def crear_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    df['hora_sin']      = np.sin(2 * np.pi * df['hora'] / 24)
+    df['hora_cos']      = np.cos(2 * np.pi * df['hora'] / 24)
+    df['mes_sin']       = np.sin(2 * np.pi * df['mes'] / 12)
+    df['mes_cos']       = np.cos(2 * np.pi * df['mes'] / 12)
+    df['semana_sin']    = np.sin(2 * np.pi * df['semana_anio'] / 52)
+    df['semana_cos']    = np.cos(2 * np.pi * df['semana_anio'] / 52)
+
+    df['es_fin_semana'] = (df['dia_semana'] >= 5).astype(int)
+    df['hora_raw']      = df['hora']
+    df['mes_raw']       = df['mes']
+    df['hora_x_mes']    = df['hora'] * df['mes']
+    df['hora_x_diasem'] = df['hora'] * df['dia_semana']
+
+    return df
+
+
+def get_feature_cols(df: pd.DataFrame) -> list:
+    excluir = {'Fecha', 'timestamp', 'hora', 'Precios', 'Produccion_FV_MWh',
+               'Año', 'Precio_Medio_Anual', 'Precios_pct_Anual',
+               'mes', 'dia', 'dia_semana', 'semana_anio', 'trimestre',
+               'precio_medio_mensual', 'target'}
+    return [c for c in df.columns if c not in excluir]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. MODELO HÍBRIDO: 576 REGRESIONES RIDGE (Mes × Hora × Laborable/Festivo)
+# ─────────────────────────────────────────────────────────────────────────────
+RIDGE_ALPHA   = 100    # regularización L2 para la regresión cuadrática/lineal
+MIN_OBS_CELDA = 20     # mínimo de observaciones para ajustar una regresión
+
+class ModeloHibrido:
+    def __init__(self):
+        self.modelos_tendencia = {}
+        self.tipo_modelo       = {}   # guarda 'cuad' o 'lin' por clave
+        self.xgb               = None
+
+    def _ajustar_tendencia(self, X_años: np.ndarray, y: np.ndarray, clave: tuple):
+        m, h, f = clave
+        
+        # NORMALIZACIÓN: Año base 2019 para evitar coeficientes minúsculos
+        X_norm = X_años - 2019
+
+        # Cuadrática Ridge
+        m_cuad = make_pipeline(PolynomialFeatures(2), Ridge(alpha=RIDGE_ALPHA))
+        m_cuad.fit(X_norm, y)
+
+        p2025 = m_cuad.predict([[2025 - 2019]])[0]
+        p2030 = m_cuad.predict([[2030 - 2019]])[0]
+
+        # FALLBACK: Solo cambiar a lineal si sube en horas solares (9h a 17h)
+        if (p2030 > p2025) and (9 <= h <= 17):
+            m_lin = make_pipeline(PolynomialFeatures(1), Ridge(alpha=RIDGE_ALPHA))
+            m_lin.fit(X_norm, y)
+            self.tipo_modelo[clave] = 'lin'
+            return m_lin
+        else:
+            self.tipo_modelo[clave] = 'cuad'
+            return m_cuad
+
+    def fit(self, df: pd.DataFrame, feature_cols: list):
+        df_fit = df.copy().dropna(subset=feature_cols + ['target'])
+        df_fit['trend'] = 0.0
+
+        print("  -> Calculando 576 tendencias Ridge (por Mes, Hora y Tipo de Día)...")
+        n_cuad = n_lin = n_skip = 0
+
+        for m in range(1, 13):
+            for h in range(1, 25):
+                for f in [0, 1]:
+                    clave = (m, h, f)
+                    mask  = ((df_fit['mes'] == m) &
+                             (df_fit['hora'] == h) &
+                             (df_fit['es_fin_semana'] == f))
+
+                    if mask.sum() < MIN_OBS_CELDA:
+                        n_skip += 1
+                        continue
+
+                    X_lr = df_fit.loc[mask, ['Año']].values
+                    y_lr = df_fit.loc[mask, 'target'].values
+
+                    modelo_tend = self._ajustar_tendencia(X_lr, y_lr, clave)
+                    self.modelos_tendencia[clave] = modelo_tend
+                    
+                    # Predecir con la base normalizada
+                    df_fit.loc[mask, 'trend'] = modelo_tend.predict(X_lr - 2019)
+
+                    if self.tipo_modelo[clave] == 'cuad':
+                        n_cuad += 1
+                    else:
+                        n_lin += 1
+
+        df_fit['trend'] = df_fit['trend'].replace(0.0, 100.0)
+        df_fit['residual'] = df_fit['target'] - df_fit['trend']
+
+        print(f"     Cuadráticas usadas : {n_cuad}")
+        print(f"     Lineales (fallback): {n_lin}")
+        if n_skip:
+            print(f"     Celdas sin modelo  : {n_skip} (< {MIN_OBS_CELDA} obs)")
+
+        # ── XGBoost sobre residual ────────────────────────────────────────
+        print("  -> Entrenando XGBoost para predecir anomalías y estacionalidad intra-anual...")
+
+        mask_tr  = df_fit['Año'] <= 2024
+        mask_val = df_fit['Año'] == 2025
+
+        X_train = df_fit.loc[mask_tr,  feature_cols].values
+        y_train = df_fit.loc[mask_tr,  'residual'].values
+        X_val   = df_fit.loc[mask_val, feature_cols].values
+        y_val   = df_fit.loc[mask_val, 'residual'].values
+
+        self.xgb = xgb.XGBRegressor(
+            n_estimators          = 1000,
+            max_depth             = 6,
+            learning_rate         = 0.05,
+            subsample             = 0.8,
+            colsample_bytree      = 0.8,
+            objective             = 'reg:squarederror',
+            tree_method           = 'hist',
+            random_state          = SEED,
+            early_stopping_rounds = 50,
+        )
+        self.xgb.fit(X_train, y_train,
+                     eval_set=[(X_val, y_val)],
+                     verbose=False)
+        print(f"     Mejor iteración XGBoost: {self.xgb.best_iteration}")
+
+    def predict(self, df_pred: pd.DataFrame, feature_cols: list) -> np.ndarray:
+        df_p = df_pred.copy()
+        df_p['trend_pred'] = 100.0
+
+        for m in range(1, 13):
+            for h in range(1, 25):
+                for f in [0, 1]:
+                    clave = (m, h, f)
+                    mask  = ((df_p['mes'] == m) &
+                             (df_p['hora'] == h) &
+                             (df_p['es_fin_semana'] == f))
+                    if clave in self.modelos_tendencia:
+                        # Asegurar que restamos 2019 al año predicho
+                        df_p.loc[mask, 'trend_pred'] = (
+                            self.modelos_tendencia[clave]
+                            .predict(df_p.loc[mask, ['Año']].values - 2019)
+                        )
+
+        residual_pred = self.xgb.predict(df_p[feature_cols].values)
+        target_final  = df_p['trend_pred'].values + residual_pred
+
+        # Limitar precios mínimos a un -50%
+        return np.clip(target_final, a_min=-50, a_max=None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. PROYECCIÓN HASTA 2035
+# ─────────────────────────────────────────────────────────────────────────────
+def proyectar_hasta_2035(modelo_hibrido: ModeloHibrido,
+                          feature_cols: list) -> pd.DataFrame:
+    print("\nProyectando con precisión granular (Mensual/Diaria) hasta 2035...")
+
+    rango_fechas = pd.date_range(start='2026-01-01',
+                                  end='2035-12-31 23:00:00', freq='h')
+    df_fut = pd.DataFrame({'timestamp': rango_fechas})
+
+    df_fut['Fecha']        = df_fut['timestamp'].dt.date
+    df_fut['hora']         = df_fut['timestamp'].dt.hour + 1
+    df_fut['Año']          = df_fut['timestamp'].dt.year
+    df_fut['mes']          = df_fut['timestamp'].dt.month
+    df_fut['dia_semana']   = df_fut['timestamp'].dt.dayofweek
+    df_fut['semana_anio']  = df_fut['timestamp'].dt.isocalendar().week.astype(int)
+    df_fut['es_fin_semana']= (df_fut['dia_semana'] >= 5).astype(int)
+
+    df_fut = crear_features(df_fut)
+    df_fut['target_pred'] = modelo_hibrido.predict(df_fut, feature_cols)
+    return df_fut
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. GRÁFICOS (Modificado según petición)
+# ─────────────────────────────────────────────────────────────────────────────
+def plot_resultados_clave(df_hist: pd.DataFrame, df_fut: pd.DataFrame):
+    print("\nGenerando visualizaciones clave...")
+
+    fig = plt.figure(figsize=(16, 14))
+    gs  = GridSpec(2, 1, figure=fig, hspace=0.3)
+
+    # --- PANEL 1: Evolución 14:00h vs 20:00h ---
+    ax1 = fig.add_subplot(gs[0, 0])
+    h14_hist = df_hist[df_hist['hora'] == 14].groupby('Año')['target'].mean()
+    h20_hist = df_hist[df_hist['hora'] == 20].groupby('Año')['target'].mean()
+    h14_fut  = df_fut[df_fut['hora'] == 14].groupby('Año')['target_pred'].mean()
+    h20_fut  = df_fut[df_fut['hora'] == 20].groupby('Año')['target_pred'].mean()
+
+    años_h14 = pd.concat([h14_hist, h14_fut])
+    años_h20 = pd.concat([h20_hist, h20_fut])
+
+    ax1.plot(años_h14.index, años_h14.values,
+             color='gold', lw=3, marker='o', label='Hora Solar (14:00h)')
+    ax1.plot(años_h20.index, años_h20.values,
+             color='indigo', lw=3, marker='s', label='Pico Demanda (20:00h)')
+
+    ax1.axvline(2025.5, color='black', linestyle='--', lw=2,
+                label='Inicio Proyección Híbrida')
+    ax1.set_title('Evolución horas clave', 
+                  fontsize=14, fontweight='bold')
+    ax1.set_ylabel('% sobre la media del mes')
+    ax1.set_xticks(range(2019, 2036))
+    ax1.legend(loc='center right')
+    ax1.grid(True, alpha=0.4)
+
+    # --- PANEL 2: Radiografía Año a Año del Perfil Diario ---
+    ax2 = fig.add_subplot(gs[1, 0])
+    
+    hist_plot = df_hist[['Año', 'hora', 'target']].rename(columns={'target': 'valor'})
+    fut_plot  = df_fut[['Año', 'hora', 'target_pred']].rename(columns={'target_pred': 'valor'})
+    df_all    = pd.concat([hist_plot, fut_plot])
+
+    pivot_df = df_all.groupby(['Año', 'hora'])['valor'].mean().unstack()
+    colores = plt.cm.coolwarm(np.linspace(0, 1, len(pivot_df)))
+
+    for i, (año, fila) in enumerate(pivot_df.iterrows()):
+        if año == 2025:
+            ax2.plot(fila.index, fila.values, color='black', lw=3,
+                     linestyle='--', label='2025 (Transición)', zorder=5)
+        elif año in [2019, 2035]:
+            ax2.plot(fila.index, fila.values, color=colores[i],
+                     lw=2.5, label=f'Año {año}')
+        else:
+            ax2.plot(fila.index, fila.values, color=colores[i],
+                     lw=1.2, alpha=0.7)
+
+    ax2.set_title('Perfil Diario',
+                  fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Hora del día')
+    ax2.set_ylabel('% sobre la media mensual')
+    ax2.set_xticks(range(1, 25))
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    plt.show()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. PIPELINE PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    print("=" * 70)
+    print("INICIANDO MODELO HÍBRIDO v2.1 DE ALTA GRANULARIDAD (2019 - 2035)")
+    print("=" * 70)
+
+    archivo_csv = 'Dataset_Modelo_PrecioFV_Porcentaje.csv'
+
+    print("\n[1/5] Cargando histórico desde 2019...")
+    df_hist = cargar_datos(archivo_csv)
+
+    print("\n[2/5] Creando variables cíclicas...")
+    df_hist = crear_features(df_hist)
+    feature_cols = get_feature_cols(df_hist)
+
+    print("\n[3/5] Entrenando Modelo Híbrido (576 regresiones Ridge + XGBoost)...")
+    modelo_hibrido = ModeloHibrido()
+    modelo_hibrido.fit(df_hist, feature_cols)
+
+    print("\n[4/5] Extrapolando tendencias hasta 2035...")
+    df_fut = proyectar_hasta_2035(modelo_hibrido, feature_cols)
+
+    # ── Exportar CSV ──────────────────────────────────────────────────────
+    df_export_hist = (df_hist[['timestamp', 'Fecha', 'hora', 'Año', 'mes', 'target']]
+                      .rename(columns={'target': 'porcentaje_sobre_media'}))
+    df_export_fut  = (df_fut[['timestamp', 'Fecha', 'hora', 'Año', 'mes', 'target_pred']]
+                      .rename(columns={'target_pred': 'porcentaje_sobre_media'}))
+    df_export = pd.concat([df_export_hist, df_export_fut]).reset_index(drop=True)
+
+    df_export.to_csv('proyeccion_2019_2035_regresionRidgeXGBoost_definitivo.csv', index=False)
+    print("\n[5/5] Resultados exportados a 'proyeccion_2019_2035_regresionRidgeXGBoost_definitivo.csv'")
+
+    # LLamada a la nueva función de gráficas
+    plot_resultados_clave(df_hist, df_fut)
+
+
+if __name__ == '__main__':
+    main()

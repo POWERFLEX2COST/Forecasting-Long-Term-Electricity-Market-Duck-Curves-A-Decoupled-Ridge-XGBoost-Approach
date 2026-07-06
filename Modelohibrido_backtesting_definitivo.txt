@@ -1,0 +1,256 @@
+# =============================================================================
+# BACKTESTING: MODELO HÍBRIDO v2.1 (RIDGE + XGBOOST)
+# Target: % sobre la media mensual | Test out-of-sample: Año 2025
+# Métricas: MAE, RMSE, WAPE, rMAE, rRMSE (según Weron, 2014)
+# =============================================================================
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import xgboost as xgb
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import make_pipeline
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import warnings
+import os
+
+warnings.filterwarnings('ignore')
+SEED = 42
+np.random.seed(SEED)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. CARGA, PREPARACIÓN Y MODELO NAIVE
+# ─────────────────────────────────────────────────────────────────────────────
+def cargar_y_preparar_datos(ruta_csv: str) -> pd.DataFrame:
+    if not os.path.exists(ruta_csv):
+        raise FileNotFoundError(f"¡ERROR! No encuentro el archivo '{ruta_csv}'.")
+
+    df = pd.read_csv(ruta_csv)
+    df['Fecha'] = pd.to_datetime(df['Fecha'])
+
+    # Filtramos desde 2019
+    df = df[df['Fecha'].dt.year >= 2019]
+    df = df.sort_values(['Fecha', 'hora']).reset_index(drop=True)
+
+    # Variables de tiempo básicas
+    df['mes']           = df['Fecha'].dt.month
+    df['dia_semana']    = df['Fecha'].dt.dayofweek
+    df['semana_anio']   = df['Fecha'].dt.isocalendar().week.astype(int)
+    df['es_fin_semana'] = (df['dia_semana'] >= 5).astype(int)
+
+    # Variable objetivo (% sobre media mensual)
+    df['precio_medio_mensual'] = df.groupby(['Año', 'mes'])['Precios'].transform('mean')
+    df['target'] = df['Precios'] / df['precio_medio_mensual'] * 100
+
+    df['timestamp'] = df['Fecha'] + pd.to_timedelta(df['hora'] - 1, unit='h')
+    df = df.sort_values('timestamp').reset_index(drop=True)
+
+    # --- CREAR MODELO NAIVE (Predicción = Valor de hace exactamente 1 semana) ---
+    # Usamos merge por timestamp para ser inmunes a faltas de datos o cambios de hora
+    df_naive = df[['timestamp', 'target']].copy()
+    df_naive['timestamp'] = df_naive['timestamp'] + pd.Timedelta(weeks=1)
+    df_naive = df_naive.rename(columns={'target': 'target_naive'})
+    
+    df = df.merge(df_naive, on='timestamp', how='left')
+
+    return df
+
+def crear_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df['hora_sin']      = np.sin(2 * np.pi * df['hora'] / 24)
+    df['hora_cos']      = np.cos(2 * np.pi * df['hora'] / 24)
+    df['mes_sin']       = np.sin(2 * np.pi * df['mes'] / 12)
+    df['mes_cos']       = np.cos(2 * np.pi * df['mes'] / 12)
+    df['semana_sin']    = np.sin(2 * np.pi * df['semana_anio'] / 52)
+    df['semana_cos']    = np.cos(2 * np.pi * df['semana_anio'] / 52)
+    df['es_fin_semana'] = (df['dia_semana'] >= 5).astype(int)
+    df['hora_raw']      = df['hora']
+    df['mes_raw']       = df['mes']
+    df['hora_x_mes']    = df['hora'] * df['mes']
+    df['hora_x_diasem'] = df['hora'] * df['dia_semana']
+    return df
+
+def get_feature_cols(df: pd.DataFrame) -> list:
+    excluir = {'Fecha', 'timestamp', 'hora', 'Precios', 'Produccion_FV_MWh',
+               'Año', 'Precio_Medio_Anual', 'Precios_pct_Anual',
+               'mes', 'dia', 'dia_semana', 'semana_anio', 'trimestre',
+               'precio_medio_mensual', 'target', 'target_naive'}
+    return [c for c in df.columns if c not in excluir]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. MODELO HÍBRIDO (Ridge + XGBoost)
+# ─────────────────────────────────────────────────────────────────────────────
+RIDGE_ALPHA   = 1000
+MIN_OBS_CELDA = 20
+
+class ModeloHibrido:
+    def __init__(self):
+        self.modelos_tendencia = {}
+        self.tipo_modelo       = {}
+        self.xgb               = None
+
+    def _ajustar_tendencia(self, X_años: np.ndarray, y: np.ndarray, clave: tuple):
+        m, h, f = clave
+        X_norm = X_años - 2019
+
+        m_cuad = make_pipeline(PolynomialFeatures(2), Ridge(alpha=RIDGE_ALPHA))
+        m_cuad.fit(X_norm, y)
+
+        p2025 = m_cuad.predict([[2025 - 2019]])[0]
+        p2030 = m_cuad.predict([[2030 - 2019]])[0]
+
+        if (p2030 > p2025) and (9 <= h <= 17):
+            m_lin = make_pipeline(PolynomialFeatures(1), Ridge(alpha=RIDGE_ALPHA))
+            m_lin.fit(X_norm, y)
+            self.tipo_modelo[clave] = 'lin'
+            return m_lin
+        else:
+            self.tipo_modelo[clave] = 'cuad'
+            return m_cuad
+
+    def fit(self, df: pd.DataFrame, feature_cols: list):
+        df_fit = df.copy().dropna(subset=feature_cols + ['target'])
+        df_fit['trend'] = 0.0
+
+        print("  -> Ajustando Regresiones Ridge (2019 - 2024)...")
+        for m in range(1, 13):
+            for h in range(1, 25):
+                for f in [0, 1]:
+                    clave = (m, h, f)
+                    mask  = ((df_fit['mes'] == m) &
+                             (df_fit['hora'] == h) &
+                             (df_fit['es_fin_semana'] == f))
+
+                    if mask.sum() < MIN_OBS_CELDA: continue
+
+                    X_lr = df_fit.loc[mask, ['Año']].values
+                    y_lr = df_fit.loc[mask, 'target'].values
+
+                    modelo_tend = self._ajustar_tendencia(X_lr, y_lr, clave)
+                    self.modelos_tendencia[clave] = modelo_tend
+                    df_fit.loc[mask, 'trend'] = modelo_tend.predict(X_lr - 2019)
+
+        df_fit['trend'] = df_fit['trend'].replace(0.0, 100.0)
+        df_fit['residual'] = df_fit['target'] - df_fit['trend']
+
+        print("  -> Entrenando XGBoost sobre residuales...")
+        # Split interno para el early stopping de XGBoost
+        mask_tr  = df_fit['Año'] <= 2023
+        mask_val = df_fit['Año'] == 2024
+
+        X_train, y_train = df_fit.loc[mask_tr, feature_cols].values, df_fit.loc[mask_tr, 'residual'].values
+        X_val, y_val     = df_fit.loc[mask_val, feature_cols].values, df_fit.loc[mask_val, 'residual'].values
+
+        self.xgb = xgb.XGBRegressor(
+            n_estimators=1000, max_depth=6, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8, objective='reg:squarederror',
+            tree_method='hist', random_state=SEED, early_stopping_rounds=50,
+        )
+        self.xgb.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+
+    def predict(self, df_pred: pd.DataFrame, feature_cols: list) -> np.ndarray:
+        df_p = df_pred.copy()
+        df_p['trend_pred'] = 100.0
+
+        for m in range(1, 13):
+            for h in range(1, 25):
+                for f in [0, 1]:
+                    clave = (m, h, f)
+                    mask  = ((df_p['mes'] == m) & (df_p['hora'] == h) & (df_p['es_fin_semana'] == f))
+                    if clave in self.modelos_tendencia:
+                        df_p.loc[mask, 'trend_pred'] = self.modelos_tendencia[clave].predict(df_p.loc[mask, ['Año']].values - 2019)
+
+        residual_pred = self.xgb.predict(df_p[feature_cols].values)
+        return np.clip(df_p['trend_pred'].values + residual_pred, a_min=-50, a_max=None)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. EVALUACIÓN Y BACKTESTING
+# ─────────────────────────────────────────────────────────────────────────────
+def calcular_metricas(df_test: pd.DataFrame):
+    # Eliminamos NaNs por si falta la primera semana del naive en el límite del año
+    df_eval = df_test.dropna(subset=['target', 'target_pred', 'target_naive'])
+    
+    y_true  = df_eval['target'].values
+    y_pred  = df_eval['target_pred'].values
+    y_naive = df_eval['target_naive'].values
+
+    # Métricas Clásicas
+    mae  = mean_absolute_error(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    
+    # Métricas Naive
+    mae_naive  = mean_absolute_error(y_true, y_naive)
+    rmse_naive = np.sqrt(mean_squared_error(y_true, y_naive))
+
+    # WAPE (Weighted Average Percentage Error)
+    wape = np.sum(np.abs(y_true - y_pred)) / np.sum(np.abs(y_true))
+    
+    # Relative Metrics (rMAE, rRMSE) -> Si es < 1, nuestro modelo bate al modelo Naive
+    rmae  = mae / mae_naive
+    rrmse = rmse / rmse_naive
+
+    print("\n" + "="*50)
+    print(" RESULTADOS DEL BACKTESTING (AÑO 2025)")
+    print("="*50)
+    print(f" MAE   (Error Absoluto Medio) : {mae:.2f} %")
+    print(f" RMSE  (Error Cuadrático M.)  : {rmse:.2f} %")
+    print(f" WAPE  (Error Pct. Ponderado) : {wape*100:.2f} %")
+    print("-"*50)
+    print(f" rMAE  (vs Naive)             : {rmae:.3f}  <-- ¡Si es < 1, ganamos al Naive!")
+    print(f" rRMSE (vs Naive)             : {rrmse:.3f}  <-- ¡Si es < 1, ganamos al Naive!")
+    print("="*50)
+
+def graficar_8760(df_test: pd.DataFrame):
+    plt.figure(figsize=(20, 7))
+    
+    plt.plot(df_test['timestamp'], df_test['target'], color='black', alpha=0.5, lw=1, label='Precios Reales 2025')
+    plt.plot(df_test['timestamp'], df_test['target_pred'], color='red', alpha=0.5, lw=1, label='Predicción Híbrida a ciegas')
+    
+    plt.title('Backtesting 2025: Precios Reales vs Predicción (8760 horas)', fontsize=16, fontweight='bold')
+    plt.ylabel('% sobre la media mensual', fontsize=12)
+    plt.xlabel('Fecha', fontsize=12)
+    
+    # Formato de fechas en el eje X
+    plt.gca().xaxis.set_major_locator(mdates.MonthLocator())
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    
+    # Línea del 0
+    plt.axhline(0, color='black', lw=1, linestyle='--')
+    
+    plt.legend(loc='upper right', fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('backtesting_8760_2025.png', dpi=150)
+    plt.show()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. EJECUCIÓN PRINCIPAL
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    print("[1] Cargando datos y generando modelo Naive...")
+    df = cargar_y_preparar_datos('Dataset_Modelo_PrecioFV_Porcentaje.csv')
+    df = crear_features(df)
+    feature_cols = get_feature_cols(df)
+
+    # Separar Train (2019-2024) y Test (2025)
+    df_train = df[df['Año'] <= 2024].copy()
+    df_test  = df[df['Año'] == 2025].copy()
+
+    print(f"\n[2] Entrenando modelo híbrido con datos 2019-2024 ({len(df_train)} obs)...")
+    modelo = ModeloHibrido()
+    modelo.fit(df_train, feature_cols)
+
+    print(f"\n[3] Prediciendo a ciegas el año 2025 ({len(df_test)} obs)...")
+    df_test['target_pred'] = modelo.predict(df_test, feature_cols)
+
+    print("\n[4] Calculando Métricas de Error de la literatura...")
+    calcular_metricas(df_test)
+
+    print("\n[5] Generando gráfico de las 8760 horas...")
+    graficar_8760(df_test)
+
+if __name__ == '__main__':
+    main()
