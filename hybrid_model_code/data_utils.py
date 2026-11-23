@@ -1,7 +1,6 @@
 # =============================================================================
 # SHARED DATA/METRICS MODULE FOR FORECASTING-METHOD COMPARISON
-# Mirrors exactly the data preparation used in the paper's production scripts
-# (Analisis precios PV/XGBoost_backtexting.py, Horas_negativas_Ridge_XGBoost.py):
+# Mirrors exactly the data preparation used in the paper's production scripts:
 # target = price as % of monthly mean, train 2019-2024, blind test 2025,
 # naive week-ahead benchmark, MAE/RMSE/WAPE/rMAE/rRMSE per Weron (2014) /
 # Lago et al. (2021).
@@ -12,10 +11,12 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-CSV_PATH = (
-    r"C:\Users\lgali\OneDrive\Documents\POWERFLEX2COST\Analisis precios PV"
-    r"\Dataset_Modelo_PrecioFV_Porcentaje.csv"
-)
+REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(REPO_DIR, "data")
+# Input: OMIE hourly day-ahead prices, Spanish bidding zone (columns Fecha, hora, Precios, Año)
+CSV_PATH = os.path.join(DATA_DIR, "omie_spain_hourly_prices_2016_2025.csv")
+# Observed January-October 2026 prices, used for the out-of-sample 2026 check
+CSV_2026_PATH = os.path.join(DATA_DIR, "observed_prices_2026_jan_oct.csv")
 
 TRAIN_START_YEAR = 2019
 TRAIN_END_YEAR = 2024     # Ridge/XGB fitted on 2019-2024 for the 2025 blind backtest
@@ -28,6 +29,31 @@ FIG_DIR = os.path.join(os.path.dirname(__file__), "figures")
 TAB_DIR = os.path.join(os.path.dirname(__file__), "tables")
 for _d in (PRED_DIR, FIG_DIR, TAB_DIR):
     os.makedirs(_d, exist_ok=True)
+
+
+# ---- Revised version (November 2026): post-processing of the hybrid and Ridge-only output
+# Floor at 0 % (previously -50 %): in 2019-2025 the median price of the hours <= 0 is -0.01 EUR/MWh
+# (~0 % of the monthly mean).
+# Renormalisation: the prediction for each (year, month) is rescaled to a mean of 100 %, as the
+# definition of the target requires (Eq. 1). It uses only the prediction itself (ex ante) and does
+# not change the count of hours <= 0.
+PRED_FLOOR = 0.0
+RENORMALISE = True
+
+# Revised version: the solar constraint is removed (previously, if T(2030) > T(2025) for hours 9-17,
+# the cell's trend was made linear). The sensitivity analysis (revision_analyses/sensitivity.py) shows
+# that it affected only 25-26 of the 216 solar-hour cells and that removing it does not worsen the
+# 2025 backtest or the 2026 check.
+SOLAR_CONSTRAINT = False
+
+
+def postprocess(pred: np.ndarray, df: pd.DataFrame) -> np.ndarray:
+    """Floor at PRED_FLOOR and rescale every (year, month) to a mean of 100 %."""
+    out = pd.Series(np.clip(pred, a_min=PRED_FLOOR, a_max=None), index=df.index)
+    if RENORMALISE:
+        media = out.groupby([df["Año"], df["mes"]]).transform("mean")
+        out = out / media * 100
+    return out.values
 
 
 def load_data(csv_path: str = CSV_PATH) -> pd.DataFrame:

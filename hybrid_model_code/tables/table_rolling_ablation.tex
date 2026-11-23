@@ -1,0 +1,14 @@
+\begin{table}[H]
+    \centering
+    \caption{Robustness check: rMAE (vs.\ naïve) of the ablation configurations across five expanding test windows anchored at 2025. Source: Own elaboration.}
+    \label{tab:rolling_ablation}
+    \begin{tabular}{lccccc}
+        \toprule
+        \textbf{Configuration} & \textbf{2024-2025} & \textbf{2023-2025} & \textbf{2022-2025} & \textbf{2021-2025} & \textbf{2020-2025} \\
+        \midrule
+        Ridge only & 0.851 & 0.890 & 0.947 & 0.977 & 0.970 \\
+        XGBoost only & 1.003 & 0.986 & 0.978 & 0.977 & 0.986 \\
+        Ridge + XGBoost (hybrid) & 0.850 & 0.887 & 0.946 & 0.968 & 0.967 \\
+        \bottomrule
+    \end{tabular}
+\end{table}

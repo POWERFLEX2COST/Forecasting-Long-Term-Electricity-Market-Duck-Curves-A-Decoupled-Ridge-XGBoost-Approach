@@ -1,0 +1,4 @@
+subset,n,MAE_hybrid,MAE_ridge_only
+Negative-price hours (target<=0),797,23.329522466271726,23.534825192908876
+Extreme peaks (>p95=209.1),438,117.46747925206472,117.35221741998672
+"All hours (signed bias, pred-actual)",8759,-1.038354494546099e-15,6.230126967276595e-16

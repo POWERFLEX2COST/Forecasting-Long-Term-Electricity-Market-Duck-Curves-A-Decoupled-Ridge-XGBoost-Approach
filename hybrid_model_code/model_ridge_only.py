@@ -2,9 +2,9 @@
 # ABLATION 1: Ridge trend component ALONE (no XGBoost residual correction)
 #
 # Purpose: isolate the contribution of the residual-correction stage. This
-# uses the exact same 576 cell-wise quadratic/linear Ridge fits (alpha=1000,
-# same physical constraint on solar hours 9-17) as the full hybrid model in
-# model_ridge_xgboost.py, but the final prediction IS the trend — the
+# uses the exact same 576 cell-wise quadratic Ridge fits (alpha=1000, same
+# post-processing and same solar-constraint switch) as the full hybrid model
+# in model_ridge_xgboost.py, but the final prediction IS the trend — the
 # intra-annual residual is left unmodelled (equivalent to predicting the
 # residual as identically zero everywhere).
 # =============================================================================
@@ -34,7 +34,7 @@ class RidgeTrendOnly:
         m_cuad.fit(X_norm, y)
         p2025 = m_cuad.predict([[2025 - du.TRAIN_START_YEAR]])[0]
         p2030 = m_cuad.predict([[2030 - du.TRAIN_START_YEAR]])[0]
-        if (p2030 > p2025) and (9 <= h <= 17):
+        if du.SOLAR_CONSTRAINT and (p2030 > p2025) and (9 <= h <= 17):
             m_lin = make_pipeline(PolynomialFeatures(1), Ridge(alpha=RIDGE_ALPHA))
             m_lin.fit(X_norm, y)
             return m_lin
@@ -66,7 +66,7 @@ class RidgeTrendOnly:
                         df_p.loc[mask, "trend_pred"] = self.modelos_tendencia[clave].predict(
                             df_p.loc[mask, ["Año"]].values - du.TRAIN_START_YEAR
                         )
-        return np.clip(df_p["trend_pred"].values, a_min=-50, a_max=None)
+        return du.postprocess(df_p["trend_pred"].values, df_p)
 
 
 def main():

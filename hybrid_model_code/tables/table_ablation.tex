@@ -1,0 +1,15 @@
+\begin{table}[H]
+    \centering
+    \caption{Ablation study (2025 backtest): contribution of the Ridge trend component and the XGBoost residual-correction component to the full hybrid model. Source: Own elaboration based on OMIE~\cite{omie2025}.}
+    \label{tab:ablation}
+    \begin{tabular}{lccccc}
+        \toprule
+        \textbf{Configuration} & \textbf{MAE (\%)} & \textbf{RMSE (\%)} & \textbf{WAPE (\%)} & \textbf{rMAE} & \textbf{rRMSE} \\
+        \midrule
+        Naïve (week-ahead) & 50.09 & 78.04 & 49.45 & 1.000 & 1.000 \\
+        XGBoost only (no Ridge trend) & 50.16 & 68.20 & 49.51 & 1.001 & 0.874 \\
+        Ridge only (no residual correction) & 39.34 & 56.37 & 38.84 & 0.785 & 0.722 \\
+        \textbf{Ridge + XGBoost (full hybrid)} & \textbf{39.50} & \textbf{56.50} & \textbf{38.99} & \textbf{0.789} & \textbf{0.724} \\
+        \bottomrule
+    \end{tabular}
+\end{table}

@@ -8,12 +8,15 @@
 # stopping validation 2024) for BOTH the 2025 backtest AND the 2026-2035
 # stability projection, so that every method in the comparison uses an
 # identical training cutoff. This differs slightly from the paper's final
-# published 2026-2035 projection (Horas_negativas_Ridge_XGBoost.py), which
-# retrains on the full 2019-2025 dataset once backtesting is validated —
-# that difference is immaterial to the backtest metrics (identical to
-# XGBoost_backtexting.py) and only affects the projection by one extra
-# training year, which if anything makes this reproduction a slightly more
+# 2026-2035 projection (final_projection.py), which retrains on the full
+# 2019-2025 dataset once backtesting is validated. That difference does not
+# affect the backtest metrics and only adds one training year to the
+# projection, which if anything makes this reproduction a slightly more
 # conservative (harder) test for the hybrid model.
+#
+# Revised version: output post-processed with data_utils.postprocess()
+# (floor at 0 % + monthly renormalisation); solar constraint switched off
+# (data_utils.SOLAR_CONSTRAINT = False).
 # =============================================================================
 
 import time
@@ -57,7 +60,7 @@ class ModeloHibrido:
         m_cuad.fit(X_norm, y)
         p2025 = m_cuad.predict([[2025 - du.TRAIN_START_YEAR]])[0]
         p2030 = m_cuad.predict([[2030 - du.TRAIN_START_YEAR]])[0]
-        if (p2030 > p2025) and (9 <= h <= 17):
+        if du.SOLAR_CONSTRAINT and (p2030 > p2025) and (9 <= h <= 17):
             m_lin = make_pipeline(PolynomialFeatures(1), Ridge(alpha=RIDGE_ALPHA))
             m_lin.fit(X_norm, y)
             return m_lin
@@ -111,7 +114,7 @@ class ModeloHibrido:
                             df_p.loc[mask, ["Año"]].values - du.TRAIN_START_YEAR
                         )
         residual_pred = self.xgb.predict(df_p[XGB_FEATURE_COLS].values)
-        return np.clip(df_p["trend_pred"].values + residual_pred, a_min=-50, a_max=None)
+        return du.postprocess(df_p["trend_pred"].values + residual_pred, df_p)
 
 
 def main():

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.claude/
+hybrid_model_code/figures/
+hybrid_model_code/predictions/projection_2026_2035_*.csv
+revision_analyses/results/*.png

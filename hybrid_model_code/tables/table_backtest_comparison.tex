@@ -1,0 +1,18 @@
+\begin{table}[H]
+    \centering
+    \caption{Backtesting metrics (year 2025) for the proposed hybrid model against classical statistical, machine-learning and deep-learning long-term forecasting baselines. Source: Own elaboration based on OMIE~\cite{omie2025}.}
+    \label{tab:method_comparison}
+    \begin{tabular}{lccccc}
+        \toprule
+        \textbf{Method} & \textbf{MAE (\%)} & \textbf{RMSE (\%)} & \textbf{WAPE (\%)} & \textbf{rMAE} & \textbf{rRMSE} \\
+        \midrule
+        Naïve (week-ahead) & 50.09 & 78.04 & 49.45 & 1.000 & 1.000 \\
+        Holt-Winters (ETS) & 63.56 & 82.87 & 62.75 & 1.269 & 1.062 \\
+        SARIMAX (Fourier) & 52.91 & 71.50 & 52.23 & 1.056 & 0.916 \\
+        Prophet & 52.85 & 71.46 & 52.17 & 1.055 & 0.916 \\
+        LSTM & 46.16 & 65.10 & 45.57 & 0.922 & 0.834 \\
+        N-BEATS (calendar) & 45.52 & 62.17 & 44.94 & 0.909 & 0.797 \\
+        \textbf{Ridge + XGBoost (proposed)} & \textbf{39.50} & \textbf{56.50} & \textbf{38.99} & \textbf{0.789} & \textbf{0.724} \\
+        \bottomrule
+    \end{tabular}
+\end{table}

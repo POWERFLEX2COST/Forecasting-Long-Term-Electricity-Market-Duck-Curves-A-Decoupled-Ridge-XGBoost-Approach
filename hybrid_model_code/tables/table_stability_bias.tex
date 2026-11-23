@@ -1,0 +1,17 @@
+\begin{table}[H]
+    \centering
+    \caption{Annual-mean bias drift of the projected relative price (\% of monthly mean) for 2026, 2030 and 2035. Because the target is constructed so every month averages to 100\,\%, a method whose annual mean departs substantially from 100\,\% over the projection horizon is producing an internally inconsistent long-term forecast. Source: Own elaboration.}
+    \label{tab:stability_bias}
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{Method} & \textbf{2026 (\%)} & \textbf{2030 (\%)} & \textbf{2035 (\%)} \\
+        \midrule
+        Holt-Winters (ETS) & 141.7 & 141.7 & 141.7 \\
+        SARIMAX (Fourier) & 100.0 & 100.0 & 100.0 \\
+        Prophet & 101.0 & 102.8 & 105.0 \\
+        LSTM & 81.4 & 16.3 & 1.8 \\
+        N-BEATS (calendar) & 99.4 & 113.5 & 144.1 \\
+        \textbf{Ridge + XGBoost (proposed)} & \textbf{100.0} & \textbf{100.0} & \textbf{100.0} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
