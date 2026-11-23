@@ -13,7 +13,7 @@
 #      structural trend component is expected to flatten/revert toward the
 #      2019-2024 seasonal average instead of continuing the observed
 #      duck-curve evolution — this is the central empirical test of the
-#      paper's design-rationale argument (Sec. 3.2, main.tex).
+#      paper's design-rationale argument (Section 2.3).
 # =============================================================================
 
 import numpy as np

@@ -3,8 +3,8 @@
 #
 # Purpose in the comparison: the LSTM/RNN is the most-cited neural-network
 # baseline in the EPF literature (Lago et al. 2021, already cited in
-# main.tex). To keep the comparison fair to the paper's own no-recursive-
-# feedback design constraint (Sec. 3.2), this LSTM is deliberately built to
+# the paper). To keep the comparison fair to the paper's own no-recursive-
+# feedback design constraint (Section 2.3), this LSTM is deliberately built to
 # take ONLY deterministic calendar/cyclic features as its input sequence
 # (a 24-hour lookback window of hour/month/week/day-type encodings) — never
 # past PRICE values. Because calendar features are known exactly for any

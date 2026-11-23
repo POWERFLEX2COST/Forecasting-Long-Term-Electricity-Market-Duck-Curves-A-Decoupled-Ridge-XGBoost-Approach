@@ -9,7 +9,7 @@
 #   1. 2025 backtest with and without post-processing (to show that the
 #      post-processing does not favour the hybrid only);
 #   2. continuity of the 2019-2025 historical trend at hours 14 and 20
-#      (Fig. 9), depth of the solar valley and projected hours <= 0.
+#      (Fig. 7), depth of the solar valley and projected hours <= 0.
 # Requires the prediction files written by run_comparison.py.
 # Outputs: tables/backtest_comparison_v2.csv, tables/stability_v2.csv,
 #          figures/fig9_trend_continuity_v2.png
@@ -78,7 +78,7 @@ def main():
     print(f"\nHistorical 2019 -> 2025: h14 {h_hist[14].iloc[0]:.1f} -> {h_hist[14].iloc[-1]:.1f}; "
           f"h20 {h_hist[20].iloc[0]:.1f} -> {h_hist[20].iloc[-1]:.1f}; hours <= 0 2025: {(hist[hist['Año'] == 2025].target <= 0).sum()}")
 
-    # ---- Fig. 9 (revised)
+    # ---- Fig. 7 (revised)
     fig, axs = plt.subplots(1, 2, figsize=(14, 5))
     for ax, hh, tit in zip(axs, (14, 20), ("Hour 14:00 (solar cannibalisation)", "Hour 20:00 (evening peak)")):
         ax.plot(h_hist[hh].index, h_hist[hh].values, "k-o", lw=2, label="Actual (2019-2025)")

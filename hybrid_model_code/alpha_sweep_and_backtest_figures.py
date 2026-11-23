@@ -1,5 +1,5 @@
 """Revised version: sweep of the Ridge penalty alpha, backtest bar chart (all alternatives
-post-processed) and Fig. 7 (2025 backtest) with the new post-processing.
+post-processed) and Fig. 5 (2025 backtest) with the new post-processing.
 Requires the prediction files of run_comparison.py and the table of fair_comparison_postprocessed.py."""
 import numpy as np
 import pandas as pd
@@ -41,7 +41,7 @@ for ax, met in zip(axs, ["rMAE", "rRMSE"]):
     for t in ax.get_xticklabels(): t.set_horizontalalignment("right")
 fig.tight_layout(); fig.savefig(f"{du.FIG_DIR}/comparison_backtest_bars_v2.png", dpi=200)
 
-# ---- Fig. 7: backtest 2025
+# ---- Fig. 5: backtest 2025
 b = pd.read_csv(f"{du.PRED_DIR}/backtest_2025_ridge_xgboost.csv", parse_dates=["timestamp"])
 fig, ax = plt.subplots(figsize=(14, 5))
 ax.plot(b.timestamp, b.target, color="0.45", lw=0.5, label="Actual prices 2025")

@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 .claude/
+data/external/
+figures/output/
 hybrid_model_code/figures/
+hybrid_model_code/tables/*.tex
 hybrid_model_code/predictions/projection_2026_2035_*.csv
 revision_analyses/results/*.png

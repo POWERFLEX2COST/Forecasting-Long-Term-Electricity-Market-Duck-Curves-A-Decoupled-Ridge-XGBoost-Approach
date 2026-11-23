@@ -12,7 +12,7 @@
 #   is no more "recently observed price" to look back at, so a canonical
 #   N-BEATS would have to be fed its own prior forecasts as if they were
 #   observations — precisely the recursive-feedback failure mode the paper
-#   argues against for XGBoost-with-lags (Sec. 3.2). Applying canonical
+#   argues against for XGBoost-with-lags (Section 2.3). Applying canonical
 #   N-BEATS "honestly" at this horizon would therefore not be a meaningful
 #   additional data point (it would simply recreate the lag-XGBoost failure
 #   under a fancier name).

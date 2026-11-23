@@ -4,7 +4,7 @@
 #
 # Purpose in the comparison: SARIMA/ARIMA-family models are the classical
 # statistical benchmark for time series forecasting and are exactly the
-# family the paper (Sec. 3.2, main.tex) argues is structurally unsuited to
+# family the paper (Section 2.3) argues is structurally unsuited to
 # decade-long hourly projection: (i) forecasts are produced by the model's
 # internal recursive state-space propagation, so uncertainty/error compounds
 # over the horizon; (ii) without an explicit structural (non-stationary)

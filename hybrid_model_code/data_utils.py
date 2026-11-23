@@ -13,8 +13,9 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 REPO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DATA_DIR = os.path.join(REPO_DIR, "data")
-# Input: OMIE hourly day-ahead prices, Spanish bidding zone (columns Fecha, hora, Precios, Año)
-CSV_PATH = os.path.join(DATA_DIR, "omie_spain_hourly_prices_2016_2025.csv")
+# Input: OMIE hourly day-ahead prices, Spanish bidding zone (EUR/MWh), and REE measured PV output (MWh)
+# Columns: Fecha, hora, Precios, Produccion_FV_MWh, Año
+CSV_PATH = os.path.join(DATA_DIR, "spain_hourly_prices_pv_2016_2025.csv")
 # Observed January-October 2026 prices, used for the out-of-sample 2026 check
 CSV_2026_PATH = os.path.join(DATA_DIR, "observed_prices_2026_jan_oct.csv")
 
@@ -92,7 +93,7 @@ def build_future_calendar(start_year: int = PROJ_START_YEAR,
                            end_year: int = PROJ_END_YEAR) -> pd.DataFrame:
     """Deterministic calendar frame for the projection horizon — no price
     information at all, consistent with the paper's no-recursive-feedback
-    design constraint (Sec. 3.2 of main.tex)."""
+    design constraint (Section 2.3 of the paper)."""
     rango = pd.date_range(
         start=f"{start_year}-01-01",
         end=f"{end_year}-12-31 23:00:00",
@@ -132,7 +133,7 @@ def train_test_split(df: pd.DataFrame):
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray,
                      y_naive: np.ndarray) -> dict:
     """MAE / RMSE / WAPE / rMAE / rRMSE, identical definitions to
-    XGBoost_backtexting.py and Eq. (8)-(9) of main.tex."""
+    Eqs. (B.4)-(B.5) of the paper."""
     mask = ~(np.isnan(y_true) | np.isnan(y_pred) | np.isnan(y_naive))
     y_true, y_pred, y_naive = y_true[mask], y_pred[mask], y_naive[mask]
 
